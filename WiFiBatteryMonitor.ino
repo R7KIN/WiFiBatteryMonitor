@@ -124,7 +124,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println();
-  Serial.println(F("=== Мониторинг АКБ 12В на ESP8266 NodeMCU v3 ==="));
+  Serial.println(F("=== Мониторинг АКБ 12В на ESP8266 NodeMCU v0.0001a by R7KIN 2026 ==="));
 
   WiFi.setSleepMode(WIFI_MODEM_SLEEP);
   connectWiFi();
