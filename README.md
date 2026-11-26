@@ -39,3 +39,5 @@ const String WRITE_API_KEY    = "**API_KEY**"; # Ключ записи данн�
 # Пример работы системы:
 
 ![Пример работы](wifibatterymon_sample_chart.png)
+
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=R7KIN.WiFiBatteryMonitor)
