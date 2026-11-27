@@ -21,7 +21,7 @@ const float DIVIDER_RATIO       = 16.2f;
 float CALIBRATION_FACTOR        = 1.0241f; // Подстройте по мультиметру
 const float LOW_VOLTAGE_ALARM_V = 11.50f;
 
-// Диапазон оценки заряда свинцового АКБ 12В (10.5 В -> 0%, 12.75 В -> 100%)
+// Диапазон оценки заряда свинцового АКБ 12В (10.5 В -> 0%, 13.3 В -> 100%)
 const float V_MIN_SOC = 10.50f;
 const float V_MAX_SOC = 13.3f;
 
