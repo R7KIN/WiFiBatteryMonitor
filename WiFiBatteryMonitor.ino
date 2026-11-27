@@ -10,8 +10,11 @@ const char* WIFI_PASSWORD = "PASSWORD";
 const char* THINGSPEAK_SERVER = "http://api.thingspeak.com/update";
 const String WRITE_API_KEY    = "API_KEY";
 
-// Интервал отправки данных (30 секунд; минимум ThingSpeak — 15000 мс)
-const unsigned long SEND_INTERVAL_MS = 30000;
+// Интервал опроса и отправки данных (1 минута; минимум ThingSpeak — 15000 мс)
+const unsigned long SEND_INTERVAL_MS = 60000;
+
+// Автоперезагрузка модуля каждый час (3 600 000 мс)
+const unsigned long RESTART_INTERVAL_MS = 3600000UL;
 
 // Делитель: верхнее плечо 1300k (доп.) + 220k (встроенное) = 1520k, нижнее = 100k -> 16.2
 const float DIVIDER_RATIO       = 16.2f;
@@ -20,23 +23,41 @@ const float LOW_VOLTAGE_ALARM_V = 11.50f;
 
 // Диапазон оценки заряда свинцового АКБ 12В (10.5 В -> 0%, 12.75 В -> 100%)
 const float V_MIN_SOC = 10.50f;
-const float V_MAX_SOC = 12.75f;
+const float V_MAX_SOC = 13.3f;
+
+// Лёгкое сглаживание (EMA): 0.35 убирает мелкий дребезг, но быстро реагирует на изменение напряжения
+const float EMA_ALPHA = 0.35f;
+bool emaInitialized   = false;
+float smoothedVoltage = 0.0f;
 
 unsigned long lastSendTime = 0;
+unsigned long bootTime     = 0;
 
-int readAveragedAdc(int samples = 32) {
+int readAveragedAdc(int samples = 64) {
   long sum = 0;
   for (int i = 0; i < samples; i++) {
     sum += analogRead(A0);
-    delay(3);
+    delay(2);
   }
   return (int)(sum / samples);
 }
 
-float readBatteryVoltage() {
-  int raw = readAveragedAdc(32);
+float readBatteryVoltage(int* outRawAdc = nullptr) {
+  int raw = readAveragedAdc(64);
+  if (outRawAdc != nullptr) {
+    *outRawAdc = raw;
+  }
   float pinVoltage = (raw / 1023.0f) * 1.0f;
-  return pinVoltage * DIVIDER_RATIO * CALIBRATION_FACTOR;
+  float measuredVoltage = pinVoltage * DIVIDER_RATIO * CALIBRATION_FACTOR;
+
+  if (!emaInitialized) {
+    smoothedVoltage = measuredVoltage;
+    emaInitialized = true;
+  } else {
+    smoothedVoltage = (EMA_ALPHA * measuredVoltage) + ((1.0f - EMA_ALPHA) * smoothedVoltage);
+  }
+
+  return smoothedVoltage;
 }
 
 int estimateBatteryPercent(float voltage) {
@@ -48,9 +69,16 @@ int estimateBatteryPercent(float voltage) {
   return (int)roundf(pct);
 }
 
-void printStatus(float voltage, int percent, int rawAdc) {
-  Serial.printf("[%lu мс] ADC: %d | АКБ: %.2f В | Заряд (оценка): %d%%\n",
-                millis(), rawAdc, voltage, percent);
+int getWiFiRssi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return WiFi.RSSI();
+  }
+  return 0;
+}
+
+void printStatus(float voltage, int percent, int rawAdc, int rssi) {
+  Serial.printf("[%lu мс] ADC: %d | АКБ: %.2f В | Заряд (оценка): %d%% | RSSI: %d dBm\n",
+                millis(), rawAdc, voltage, percent, rssi);
   if (voltage < LOW_VOLTAGE_ALARM_V) {
     Serial.printf("ВНИМАНИЕ: Напряжение АКБ ниже %.2f В (текущее: %.2f В)!\n",
                   LOW_VOLTAGE_ALARM_V, voltage);
@@ -84,7 +112,7 @@ void connectWiFi() {
   }
 }
 
-void sendToThingSpeak(float voltage, int percent) {
+void sendToThingSpeak(float voltage, int percent, int rssi) {
   connectWiFi();
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(F("Отправка отменена: нет подключения к Wi-Fi"));
@@ -97,7 +125,8 @@ void sendToThingSpeak(float voltage, int percent) {
   String url = String(THINGSPEAK_SERVER) +
                "?api_key=" + WRITE_API_KEY +
                "&field1=" + String(voltage, 2) +
-               "&field2=" + String(percent);
+               "&field2=" + String(percent) +
+               "&field3=" + String(rssi);
 
   Serial.print(F("Запрос ThingSpeak: "));
   Serial.println(url);
@@ -124,21 +153,30 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println();
-  Serial.println(F("=== Мониторинг АКБ 12В на ESP8266 NodeMCU v0.0001a by R7KIN 2026 ==="));
+  Serial.println(F("=== Мониторинг АКБ 12В на ESP8266 NodeMCU v0.0002a by R7KIN 2026 ==="));
 
+  bootTime = millis();
   WiFi.setSleepMode(WIFI_MODEM_SLEEP);
   connectWiFi();
 
-  int rawAdc = readAveragedAdc(32);
-  float vBat = readBatteryVoltage();
+  int rawAdc = 0;
+  float vBat = readBatteryVoltage(&rawAdc);
   int soc    = estimateBatteryPercent(vBat);
+  int rssi   = getWiFiRssi();
 
-  printStatus(vBat, soc, rawAdc);
-  sendToThingSpeak(vBat, soc);
+  printStatus(vBat, soc, rawAdc, rssi);
+  sendToThingSpeak(vBat, soc, rssi);
   lastSendTime = millis();
 }
 
 void loop() {
+  if (millis() - bootTime >= RESTART_INTERVAL_MS) {
+    Serial.println(F("Плановая ежечасная перезагрузка ESP8266..."));
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     WiFi.setSleepMode(WIFI_MODEM_SLEEP);
   }
@@ -146,12 +184,13 @@ void loop() {
   if (millis() - lastSendTime >= SEND_INTERVAL_MS) {
     lastSendTime = millis();
 
-    int rawAdc = readAveragedAdc(32);
-    float vBat = readBatteryVoltage();
+    int rawAdc = 0;
+    float vBat = readBatteryVoltage(&rawAdc);
     int soc    = estimateBatteryPercent(vBat);
+    int rssi   = getWiFiRssi();
 
-    printStatus(vBat, soc, rawAdc);
-    sendToThingSpeak(vBat, soc);
+    printStatus(vBat, soc, rawAdc, rssi);
+    sendToThingSpeak(vBat, soc, rssi);
   }
 
   delay(50);
